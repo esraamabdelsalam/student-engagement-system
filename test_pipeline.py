@@ -3,7 +3,7 @@ from services.face_detection_service import detect_faces
 from services.recognition_service import recognize_face
 
 # load image
-image = Image.open("test_img.jpg").convert("RGB")
+image = Image.open("new_img.jpg").convert("RGB")
 
 # detect faces
 faces = detect_faces(image)
