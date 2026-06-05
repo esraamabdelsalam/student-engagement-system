@@ -1,6 +1,6 @@
 # Student Engagement System
 
-This project implements computer vision models for monitoring students during the learning process.
+This project implements computer vision and machine learning models for monitoring students during the learning process.
 
 ## Requirements
 
