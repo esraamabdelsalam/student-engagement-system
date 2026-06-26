@@ -1,88 +1,185 @@
-import torch
+import os
 import numpy as np
+import torch
 import joblib
 import gdown
-import os
-from PIL import Image
-from facenet_pytorch import InceptionResnetV1, MTCNN
 
-# =========================
-# Device
-# =========================
+from facenet_pytorch import InceptionResnetV1
+from sklearn.metrics.pairwise import cosine_similarity
+
+# ======================
+# DEVICE
+# ======================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# =========================
-# Download SVM model (Drive fallback)
-# =========================
-MODEL_PATH = "models/recognition/svm_face_recognition.pkl"
+# ======================
+# PATHS
+# ======================
+SVM_PATH = "models/svm_face.pkl"
+NORM_PATH = "models/normalizer.pkl"
+CENTROIDS_PATH = "models/centroids.pkl"
 
-DRIVE_URL = "https://drive.google.com/uc?id=1vthpA88ww3gTY0La9pIGDaXVAX3S6trI"
+SVM_ID = "1EeApYLi2P6kgRY4QObaI_kdob_cFcIV-"
+NORM_ID = "1qLZHaZV8sJtyYNN7tYbWvY9BCpwMUjK1"
+CENTROIDS_ID = "1L5wpCcILVW7wnKPKkQiJlmZJVOr4GE52"
 
-if not os.path.exists(MODEL_PATH):
-    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
-    gdown.download(DRIVE_URL, MODEL_PATH, quiet=False)
+# ======================
+# MODEL STORAGE (lazy loading)
+# ======================
+svm_model = None
+normalizer = None
+centroids = None
+face_model = None
+models_loaded = False
 
-# =========================
-# Models
-# =========================
-mtcnn = MTCNN(image_size=160, margin=20, keep_all=False)
+# ======================
+# DOWNLOAD UTILITY
+# ======================
+def download_if_missing(path, file_id):
+    if not os.path.exists(path):
+        dir_path = os.path.dirname(path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
 
-face_model = InceptionResnetV1(pretrained='vggface2').eval().to(device)
-svm_model = joblib.load(MODEL_PATH)
+        gdown.download(
+            f"https://drive.google.com/uc?id={file_id}",
+            path,
+            quiet=False
+        )
 
-# =========================
-# Labels
-# =========================
+# ======================
+# LOAD MODELS (LAZY)
+# ======================
+def load_models():
+    global svm_model, normalizer, centroids, face_model, models_loaded
+
+    if models_loaded:
+        return
+
+    # download if needed
+    download_if_missing(SVM_PATH, SVM_ID)
+    download_if_missing(NORM_PATH, NORM_ID)
+    download_if_missing(CENTROIDS_PATH, CENTROIDS_ID)
+
+    # load sklearn models
+    svm_model = joblib.load(SVM_PATH)
+    normalizer = joblib.load(NORM_PATH)
+    centroids = joblib.load(CENTROIDS_PATH)
+
+    # load facenet
+    face_model = InceptionResnetV1(pretrained="vggface2").eval().to(device)
+
+    models_loaded = True
+
+
+# ======================
+# LABELS
+# ======================
 idx_to_class = {
-    0: "Akshay Kumar", 1: "Alexandra Daddario", 2: "Alia Bhatt",
-    3: "Amitabh Bachchan", 4: "Andy Samberg", 5: "Anushka Sharma",
-    6: "Billie Eilish", 7: "Brad Pitt", 8: "Camila Cabello",
-    9: "Charlize Theron", 10: "Claire Holt", 11: "Courtney Cox",
-    12: "Dwayne Johnson", 13: "Elizabeth Olsen", 14: "Ellen Degeneres",
-    15: "Esraa Mostafa", 16: "Henry Cavill", 17: "Hrithik Roshan",
-    18: "Hugh Jackman", 19: "Jessica Alba", 20: "Kashyap",
-    21: "Lisa Kudrow", 22: "Margot Robbie", 23: "Marmik",
-    24: "Natalie Portman", 25: "Priyanka Chopra", 26: "Robert Downey Jr",
-    27: "Roger Federer", 28: "Tom Cruise", 29: "Vijay Deverakonda",
-    30: "Virat Kohli", 31: "Zac Efron"
+    0: "Akshay Kumar",
+    1: "Alexandra Daddario",
+    2: "Alia Bhatt",
+    3: "Amitabh Bachchan",
+    4: "Andy Samberg",
+    5: "Anushka Sharma",
+    6: "Billie Eilish",
+    7: "Brad Pitt",
+    8: "Camila Cabello",
+    9: "Charlize Theron",
+    10: "Claire Holt",
+    11: "Courtney Cox",
+    12: "Dwayne Johnson",
+    13: "Elizabeth Olsen",
+    14: "Ellen Degeneres",
+    15: "Esraa Mostafa",
+    16: "Henry Cavill",
+    17: "Hrithik Roshan",
+    18: "Hugh Jackman",
+    19: "Jessica Alba",
+    20: "Kashyap",
+    21: "Lisa Kudrow",
+    22: "Margot Robbie",
+    23: "Marmik",
+    24: "Natalie Portman",
+    25: "Priyanka Chopra",
+    26: "Robert Downey Jr",
+    27: "Roger Federer",
+    28: "Tom Cruise",
+    29: "Vijay Deverakonda",
+    30: "Virat Kohli",
+    31: "Zac Efron"
 }
 
-# =========================
-# Main Function
-# =========================
-def recognize_face(image: Image.Image):
+# ======================
+# CORE FUNCTION
+# ======================
+def recognize_faces(face_images, cosine_threshold=0.50):
 
-    image = image.convert("RGB")
+    if not face_images:
+        return []
 
-    # 1. Detect face
-    face = mtcnn(image)
+    # ensure models loaded
+    load_models()
 
-    if face is None:
-        return {"error": "No face detected"}
+    results = []
 
-    # 2. Add batch dim
-    face = face.unsqueeze(0).to(device)
+    with torch.inference_mode():
 
-    # 3. FaceNet embedding
-    with torch.no_grad():
-        embedding = face_model(face)
+        for face in face_images:
 
-    # IMPORTANT FIX: normalize embedding (VERY IMPORTANT for SVM)
-    embedding = embedding / torch.norm(embedding, p=2, dim=1, keepdim=True)
+            if face is None:
+                continue
 
-    embedding = embedding.cpu().numpy()
+            # ======================
+            # EMBEDDING
+            # ======================
+            face = face.unsqueeze(0).to(device)
 
-    # 4. Prediction
-    pred = svm_model.predict(embedding)[0]
+            embedding = face_model(face)
+            embedding = embedding.squeeze(0).cpu().numpy()
 
-    # 5. Confidence
-    confidence = None
-    if hasattr(svm_model, "predict_proba"):
-        confidence = float(np.max(svm_model.predict_proba(embedding)[0]))
+            embedding = normalizer.transform([embedding])
 
-    # 6. Output
-    return {
-        "student_id": int(pred),
-        "student_name": idx_to_class.get(int(pred), "Unknown"),
-        "confidence": confidence
-    }
+            # ======================
+            # SVM
+            # ======================
+            probs = svm_model.predict_proba(embedding)[0]
+
+            pred = int(np.argmax(probs))
+            svm_confidence = float(np.max(probs))
+
+            # ======================
+            # CENTROID + COSINE
+            # ======================
+            centroid = centroids.get(pred)
+
+            cosine_score = 0.0
+
+            if centroid is not None:
+                centroid = np.array(centroid).reshape(1, -1)
+
+                cosine_score = float(
+                    cosine_similarity(embedding, centroid)[0][0]
+                )
+
+            # ======================
+            # DECISION
+            # ======================
+            if cosine_score >= cosine_threshold:
+                student_name = idx_to_class.get(pred, f"Person_{pred}")
+            else:
+                student_name = "Unknown"
+
+            results.append({
+                "student_id": pred,
+                "student_name": student_name,
+                "embedding": embedding,
+                "svc_confidence": round(svm_confidence, 4),
+                "cosine_similarity": round(cosine_score, 4),
+                "recognition_confidence": round(cosine_score, 4)
+            })
+
+    return results
+
+
+recognize_face = recognize_faces

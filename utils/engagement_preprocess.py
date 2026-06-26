@@ -1,0 +1,29 @@
+import cv2
+import torchvision.transforms as transforms
+
+engagement_transform = transforms.Compose([
+    transforms.ToPILImage(),
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
+
+
+def preprocess_engagement(face_crop):
+    """
+    face_crop:
+        OpenCV image (BGR)
+
+    return:
+        Tensor (3,224,224)
+    """
+
+    rgb = cv2.cvtColor(
+        face_crop,
+        cv2.COLOR_BGR2RGB
+    )
+
+    return engagement_transform(rgb)

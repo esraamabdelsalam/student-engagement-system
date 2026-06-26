@@ -2,7 +2,7 @@ from fastapi import APIRouter, UploadFile, File
 from PIL import Image
 import io
 
-from services.face_detection_service import detect_faces
+from services.detector import detect_faces
 from services.recognition_service import recognize_face
 from services.emotion_service import predict_emotion
 

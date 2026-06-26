@@ -1,37 +1,36 @@
-import torch
-import torch.nn.functional as F
-from PIL import Image
-import gdown
 import os
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import gdown
 from torchvision.models import resnet50, ResNet50_Weights
 
-from utils.face_utils import extract_face
-
-# =========================
-# Device
-# =========================
+# ======================
+# DEVICE
+# ======================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# =========================
-# Model download from Drive
-# =========================
+# ======================
+# MODEL DOWNLOAD
+# ======================
 MODEL_PATH = "emotion.pth"
-
-DRIVE_URL = "https://drive.google.com/uc?id=1r-a6mRzm2GrjjYPuVXE5UMOxuTIvXkk7"
+FILE_ID = "1r-a6mRzm2GrjjYPuVXE5UMOxuTIvXkk7"
 
 if not os.path.exists(MODEL_PATH):
-    gdown.download(DRIVE_URL, MODEL_PATH, quiet=False)
+    gdown.download(
+        f"https://drive.google.com/uc?id={FILE_ID}",
+        MODEL_PATH,
+        quiet=False
+    )
 
-# =========================
-# Model architecture (NO models folder needed)
-# =========================
-def get_model():
+# ======================
+# MODEL
+# ======================
+def build_model():
     model = resnet50(weights=ResNet50_Weights.DEFAULT)
 
-    in_features = model.fc.in_features
     model.fc = nn.Sequential(
-        nn.Linear(in_features, 1000),
+        nn.Linear(2048, 1000),
         nn.ReLU(),
         nn.Dropout(0.5),
         nn.Linear(1000, 5)
@@ -39,20 +38,18 @@ def get_model():
 
     return model
 
-# =========================
-# Load model + weights
-# =========================
-model_50 = get_model()
 
-state_dict = torch.load(MODEL_PATH, map_location=device)
-model_50.load_state_dict(state_dict)
+model = build_model()
 
-model_50.to(device)
-model_50.eval()
+state = torch.load(MODEL_PATH, map_location=device)
+model.load_state_dict(state)
 
-# =========================
-# Labels
-# =========================
+model.to(device)
+model.eval()
+
+# ======================
+# LABELS
+# ======================
 idx_to_class = {
     0: "Angry",
     1: "Fear",
@@ -61,33 +58,36 @@ idx_to_class = {
     4: "Surprise"
 }
 
-# =========================
-# Prediction function
-# =========================
-def predict_emotion(image: Image.Image):
+# ======================
+# CORE FUNCTION (SAFE + FAST)
+# ======================
+def predict_emotion_faces(faces):
 
-    try:
-        # 1. detect face
-        face = extract_face(image)
+    if not faces:
+        return []
 
-        if face is None:
-            return {"error": "No face detected"}
+    # ensure valid tensors only
+    faces = [f for f in faces if f is not None]
 
-        # 2. prepare tensor
-        face = face.unsqueeze(0).to(device)
+    if len(faces) == 0:
+        return []
 
-        # 3. inference
-        with torch.no_grad():
-            outputs = model_50(face)
-            probs = F.softmax(outputs, dim=1)
+    batch = torch.stack(faces).to(device)
 
-            conf, pred = torch.max(probs, 1)
+    with torch.inference_mode():
+        logits = model(batch)
+        probs = F.softmax(logits, dim=1)
 
-        # 4. return result
-        return {
-            "emotion": idx_to_class[int(pred.item())],
-            "confidence": float(conf.item())
+        conf, pred = torch.max(probs, dim=1)
+
+    return [
+        {
+            "emotion": idx_to_class[int(p)],
+            "emotion_confidence": float(c)
         }
+        for p, c in zip(pred, conf)
+    ]
 
-    except Exception as e:
-        return {"error": str(e)}
+
+# alias
+predict_emotion = predict_emotion_faces
