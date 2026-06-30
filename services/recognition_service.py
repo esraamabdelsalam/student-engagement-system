@@ -24,52 +24,42 @@ NORM_ID = "1qLZHaZV8sJtyYNN7tYbWvY9BCpwMUjK1"
 CENTROIDS_ID = "1L5wpCcILVW7wnKPKkQiJlmZJVOr4GE52"
 
 # ======================
-# MODEL STORAGE (lazy loading)
+# MODELS
 # ======================
 svm_model = None
 normalizer = None
 centroids = None
 face_model = None
-models_loaded = False
+loaded = False
 
-# ======================
-# DOWNLOAD UTILITY
-# ======================
+
 def download_if_missing(path, file_id):
     if not os.path.exists(path):
-        dir_path = os.path.dirname(path)
-        if dir_path:
-            os.makedirs(dir_path, exist_ok=True)
-
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         gdown.download(
             f"https://drive.google.com/uc?id={file_id}",
             path,
             quiet=False
         )
 
-# ======================
-# LOAD MODELS (LAZY)
-# ======================
-def load_models():
-    global svm_model, normalizer, centroids, face_model, models_loaded
 
-    if models_loaded:
+def load_models():
+    global svm_model, normalizer, centroids, face_model, loaded
+
+    if loaded:
         return
 
-    # download if needed
     download_if_missing(SVM_PATH, SVM_ID)
     download_if_missing(NORM_PATH, NORM_ID)
     download_if_missing(CENTROIDS_PATH, CENTROIDS_ID)
 
-    # load sklearn models
     svm_model = joblib.load(SVM_PATH)
     normalizer = joblib.load(NORM_PATH)
     centroids = joblib.load(CENTROIDS_PATH)
 
-    # load facenet
     face_model = InceptionResnetV1(pretrained="vggface2").eval().to(device)
 
-    models_loaded = True
+    loaded = True
 
 
 # ======================
@@ -110,15 +100,15 @@ idx_to_class = {
     31: "Zac Efron"
 }
 
+
 # ======================
-# CORE FUNCTION
+# CORE
 # ======================
 def recognize_faces(face_images, cosine_threshold=0.50):
 
     if not face_images:
         return []
 
-    # ensure models loaded
     load_models()
 
     results = []
@@ -138,45 +128,48 @@ def recognize_faces(face_images, cosine_threshold=0.50):
             embedding = face_model(face)
             embedding = embedding.squeeze(0).cpu().numpy()
 
-            embedding = normalizer.transform([embedding])
+            # normalize ONCE
+            embedding_norm = normalizer.transform([embedding])[0]
 
             # ======================
             # SVM
             # ======================
-            probs = svm_model.predict_proba(embedding)[0]
+            probs = svm_model.predict_proba([embedding_norm])[0]
 
             pred = int(np.argmax(probs))
-            svm_confidence = float(np.max(probs))
+            svm_conf = float(np.max(probs))
 
             # ======================
-            # CENTROID + COSINE
+            # COSINE (SAFE + FAST)
             # ======================
             centroid = centroids.get(pred)
 
-            cosine_score = 0.0
-
             if centroid is not None:
                 centroid = np.array(centroid).reshape(1, -1)
-
-                cosine_score = float(
-                    cosine_similarity(embedding, centroid)[0][0]
+                cosine = float(
+                    cosine_similarity([embedding_norm], centroid)[0][0]
                 )
+            else:
+                cosine = 0.0
 
             # ======================
-            # DECISION
+            # FINAL DECISION
             # ======================
-            if cosine_score >= cosine_threshold:
-                student_name = idx_to_class.get(pred, f"Person_{pred}")
+            if cosine >= cosine_threshold:
+                name = idx_to_class.get(pred, f"Person_{pred}")
             else:
-                student_name = "Unknown"
+                name = "Unknown"
 
             results.append({
                 "student_id": pred,
-                "student_name": student_name,
-                "embedding": embedding,
-                "svc_confidence": round(svm_confidence, 4),
-                "cosine_similarity": round(cosine_score, 4),
-                "recognition_confidence": round(cosine_score, 4)
+                "student_name": name,
+
+                # مهم: خفيف و usable فقط
+                "embedding": embedding_norm.tolist(),
+
+                "svc_confidence": round(svm_conf, 4),
+                "cosine_similarity": round(cosine, 4),
+                "recognition_confidence": round(cosine, 4)
             })
 
     return results

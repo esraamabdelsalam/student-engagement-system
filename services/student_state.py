@@ -1,106 +1,86 @@
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 import time
+from collections import Counter
 
 SEQUENCE_LENGTH = 16
-BUFFER_TIMEOUT = 5 * 60  # 5 minutes
+BUFFER_TIMEOUT = 4.5 * 60  # 🔥 4.5 minutes (as you requested)
 
 
 @dataclass
 class StudentState:
     track_id: int
 
-    # =========================
-    # Identity (NO BUFFER)
-    # =========================
+    # identity
     student_id: Optional[int] = None
     student_name: Optional[str] = None
-    embedding: Optional[Any] = None
-
-    svc_confidence: float = 0.0
-    cosine_similarity: float = 0.0
     recognition_confidence: float = 0.0
 
-    # =========================
-    # Emotion STREAM BUFFER
-    # =========================
+    # emotion buffer (sliding window)
     emotion_buffer: List[str] = field(default_factory=list)
-    current_emotion: Optional[str] = None
-    emotion_confidence: float = 0.0
 
-    # =========================
-    # Engagement SEQUENCE BUFFER
-    # =========================
+    # engagement buffer (STRICT sequence)
     engagement_buffer: List[Any] = field(default_factory=list)
-    current_engagement: Optional[str] = None
-    engagement_confidence: float = 0.0
 
-    # =========================
-    # TIME
-    # =========================
-    created_at: float = field(default_factory=time.time)
+    # time tracking
     last_seen: float = field(default_factory=time.time)
 
     # =========================
-    # LIFECYCLE
+    # TIMEOUT RESET LOGIC
     # =========================
     def update_last_seen(self):
-        self.last_seen = time.time()
+        now = time.time()
+
+        # 🔥 if user disappeared too long → reset everything
+        if now - self.last_seen > BUFFER_TIMEOUT:
+            self.reset_emotion_cycle()
+            self.reset_engagement_cycle()
+
+        self.last_seen = now
 
     def is_expired(self):
         return (time.time() - self.last_seen) > BUFFER_TIMEOUT
 
     # =========================
-    # EMOTION STREAM
+    # EMOTION BUFFER
     # =========================
     def add_emotion(self, emotion: str):
         self.emotion_buffer.append(emotion)
 
-    def clear_emotion_buffer(self):
-        self.emotion_buffer.clear()
-
-    def set_emotion_result(self, emotion: str, confidence: float = 0.0):
-        self.current_emotion = emotion
-        self.emotion_confidence = confidence
+        # keep last 16 only (sliding window)
+        if len(self.emotion_buffer) > SEQUENCE_LENGTH:
+            self.emotion_buffer.pop(0)
 
     def get_emotion_mode(self) -> Optional[str]:
-        if not self.emotion_buffer:
-            return None
-        return max(set(self.emotion_buffer), key=self.emotion_buffer.count)
-
-    # =========================
-    # ENGAGEMENT SEQUENCE
-    # =========================
-    def add_frame(self, frame: Any):
-        if len(self.engagement_buffer) < SEQUENCE_LENGTH:
-            self.engagement_buffer.append(frame)
-
-    def is_engagement_ready(self) -> bool:
-        return len(self.engagement_buffer) == SEQUENCE_LENGTH
-
-    def get_engagement_sequence(self) -> Optional[List[Any]]:
-        if len(self.engagement_buffer) != SEQUENCE_LENGTH:
-            return None
-        return list(self.engagement_buffer)
-
-    def set_engagement_result(self, label: str, confidence: float):
-        self.current_engagement = label
-        self.engagement_confidence = confidence
-
-    def clear_engagement_buffer(self):
-        self.engagement_buffer.clear()
-
-    # =========================
-    # SAFE CYCLE BOUNDARY
-    # =========================
-    def reset_engagement_cycle(self):
         """
-        ONLY for engagement cycle reset (16-frame completion)
+        Return most frequent emotion in last 16 frames
         """
-        self.clear_engagement_buffer()
+        if len(self.emotion_buffer) < SEQUENCE_LENGTH:
+            return None
+
+        return Counter(self.emotion_buffer).most_common(1)[0][0]
 
     def reset_emotion_cycle(self):
+        self.emotion_buffer.clear()
+
+    # =========================
+    # ENGAGEMENT BUFFER
+    # =========================
+    def add_frame(self, frame: Any):
+        self.engagement_buffer.append(frame)
+
+    def get_engagement_sequence(self) -> Optional[List[Any]]:
         """
-        ONLY for emotion aggregation reset (mode computed)
+        Consume EXACTLY 16 frames
+        keep leftover for continuity
         """
-        self.clear_emotion_buffer()
+        if len(self.engagement_buffer) < SEQUENCE_LENGTH:
+            return None
+
+        seq = self.engagement_buffer[:SEQUENCE_LENGTH]
+        self.engagement_buffer = self.engagement_buffer[SEQUENCE_LENGTH:]
+
+        return seq
+
+    def reset_engagement_cycle(self):
+        self.engagement_buffer.clear()

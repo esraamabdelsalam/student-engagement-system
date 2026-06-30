@@ -5,8 +5,7 @@ import asyncio
 from services.face_utils import detect_faces
 from services.recognition_service import recognize_faces
 from services.emotion_service import predict_emotion_faces
-from services.engagement_service import process_student_frame
-
+from services.engagement_service import predict_engagement_sequence
 from services.student_manager import student_manager
 
 router = APIRouter(prefix="/analyze", tags=["Analyze"])
@@ -24,18 +23,15 @@ async def analyze(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Invalid image")
 
     # =========================
-    # DETECT FACES
+    # FACE DETECTION
     # =========================
     faces, _ = detect_faces(image)
 
     if not faces:
-        return {
-            "faces_detected": 0,
-            "results": []
-        }
+        return {"faces_detected": 0, "results": []}
 
     # =========================
-    # PARALLEL INFERENCE (stateless)
+    # PARALLEL MODELS
     # =========================
     recognition_task = asyncio.to_thread(recognize_faces, faces)
     emotion_task = asyncio.to_thread(predict_emotion_faces, faces)
@@ -55,77 +51,90 @@ async def analyze(file: UploadFile = File(...)):
         rec = recognition_result[i]
         emo = emotion_result[i]
 
-        student_id = rec.get("student_id", None)
+        # =====================================================
+        # FIX #1: STABLE TRACKING KEY (VERY IMPORTANT)
+        # =====================================================
+        student_id = rec.get("student_id")
+
+        if student_id is None:
+            student_id = f"unknown_{i}"
+
+        student = student_manager.get(student_id)
+        student.update_last_seen()
 
         # =========================
-        # GET STATE (TRACKED STUDENT)
-        # =========================
-        student = student_manager.get(student_id if student_id is not None else i)
-
-        # =========================
-        # UPDATE RECOGNITION STATE
+        # RECOGNITION
         # =========================
         student.student_id = rec.get("student_id")
         student.student_name = rec.get("student_name")
-        student.embedding = rec.get("embedding")
-
-        student.svc_confidence = rec.get("svc_confidence", 0.0)
-        student.cosine_similarity = rec.get("cosine_similarity", 0.0)
         student.recognition_confidence = rec.get("recognition_confidence", 0.0)
 
         # =========================
-        # UPDATE EMOTION STREAM
+        # EMOTION STREAM
         # =========================
-        student.add_emotion(emo.get("emotion", "Unknown"))
+        live_emotion = emo.get("emotion", "Unknown")
+        student.add_emotion(live_emotion)
+
+        emotion_final = student.get_emotion_result()
 
         # =========================
-        # UPDATE ENGAGEMENT STREAM
+        # ENGAGEMENT STREAM
         # =========================
-        student.add_frame(face)
+        if face is not None:
+            student.add_frame(face)
+
+        seq = student.get_engagement_sequence()
 
         engagement_result = None
+        status = "Collecting"
 
-        if student.is_engagement_ready():
-            seq = student.get_engagement_sequence()
+        if seq is not None:
 
             engagement_result = await asyncio.to_thread(
-                process_student_frame,
-                student.track_id,
+                predict_engagement_sequence,
                 seq
             )
 
-            student.reset_engagement_cycle()
+            status = "Completed"
 
         # =========================
-        # BUILD RESPONSE
+        # RESPONSE
         # =========================
         results.append({
+
             "face_id": i,
 
-            # Recognition
+            # identity
             "student_name": student.student_name,
-            "svc_confidence": student.svc_confidence,
-            "cosine_similarity": student.cosine_similarity,
             "recognition_confidence": student.recognition_confidence,
 
-            # Emotion (stream value)
-            "emotion": student.emotion_buffer[-1] if student.emotion_buffer else "Unknown",
+            # LIVE emotion
+            "live_emotion": live_emotion,
             "emotion_buffer_size": len(student.emotion_buffer),
 
-            # Engagement (cycle-based)
+            # FINAL emotion (mode)
+            "emotion": emotion_final if emotion_final else "Collecting",
+
+            # ENGAGEMENT
             "engagement": (
-                engagement_result.get("engagement")
-                if engagement_result else "Not Ready"
+                engagement_result["engagement"]
+                if engagement_result
+                else "Collecting"
             ),
 
             "engagement_confidence": (
-                engagement_result.get("confidence", 0.0)
-                if engagement_result else 0.0
-            )
+                engagement_result["confidence"]
+                if engagement_result
+                else 0.0
+            ),
+
+            "engagement_buffer_size": len(student.engagement_buffer),
+
+            "status": status
         })
 
     # =========================
-    # CLEANUP OLD TRACKS
+    # CLEANUP EXPIRED SESSIONS
     # =========================
     student_manager.cleanup()
 
