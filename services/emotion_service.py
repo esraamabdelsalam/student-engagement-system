@@ -1,3 +1,5 @@
+import os
+import gdown
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,6 +9,21 @@ from torchvision.transforms.functional import to_pil_image
 import numpy as np
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# =========================
+# MODEL DOWNLOAD
+# =========================
+MODEL_PATH = "models/emotion/emotion.pth"
+FILE_ID = "1r-a6mRzm2GrjjYPuVXE5UMOxuTIvXkk7"
+
+os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+
+if not os.path.exists(MODEL_PATH):
+    gdown.download(
+        f"https://drive.google.com/uc?id={FILE_ID}",
+        MODEL_PATH,
+        quiet=False
+    )
 
 
 # =========================
@@ -27,8 +44,15 @@ def build_model():
 
 model = build_model()
 
-# ⚠️ لو عندك weights مدربة فعليًا فعلّي السطر ده:
-# model.load_state_dict(torch.load("emotion.pth", map_location=device))
+# =========================
+# LOAD TRAINED WEIGHTS
+# =========================
+state = torch.load(MODEL_PATH, map_location=device)
+
+if isinstance(state, dict) and "model_state_dict" in state:
+    model.load_state_dict(state["model_state_dict"])
+else:
+    model.load_state_dict(state)
 
 model.to(device)
 model.eval()
@@ -63,21 +87,15 @@ transform = T.Compose([
 # SAFE CONVERSION
 # =========================
 def safe_convert(img):
-    """
-    Converts ANY input (Tensor / PIL / ndarray) → PIL Image
-    """
     if img is None:
         return None
 
-    # Tensor → PIL
     if torch.is_tensor(img):
         return to_pil_image(img)
 
-    # numpy → PIL
     if isinstance(img, np.ndarray):
         return T.ToPILImage()(img)
 
-    # already PIL
     return img
 
 
@@ -91,7 +109,6 @@ def predict_emotion_faces(faces):
     processed = []
 
     for f in faces:
-
         f = safe_convert(f)
 
         if f is None:

@@ -140,7 +140,7 @@ def recognize_faces(face_images, cosine_threshold=0.50):
             svm_conf = float(np.max(probs))
 
             # ======================
-            # COSINE (SAFE + FAST)
+            # COSINE
             # ======================
             centroid = centroids.get(pred)
 
@@ -156,12 +156,14 @@ def recognize_faces(face_images, cosine_threshold=0.50):
             # FINAL DECISION
             # ======================
             if cosine >= cosine_threshold:
+                student_id = pred
                 name = idx_to_class.get(pred, f"Person_{pred}")
             else:
+                student_id = None
                 name = "Unknown"
 
             results.append({
-                "student_id": pred,
+                "student_id": student_id,
                 "student_name": name,
 
                 # مهم: خفيف و usable فقط
